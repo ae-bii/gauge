@@ -1,0 +1,4 @@
+(executable
+ (public_name gauge)
+ (name main)
+ (libraries gauge))
