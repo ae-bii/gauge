@@ -1,2 +1,5 @@
-(test
- (name test_gauge))
+(library
+ (name gauge_tests)
+ (libraries gauge)
+ (preprocess (pps ppx_expect))
+ (inline_tests))
