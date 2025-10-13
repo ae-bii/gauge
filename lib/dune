@@ -1,3 +1,4 @@
 (library
- (name gauge))
+ (name gauge)
+ (libraries ppxlib))
 

@@ -14,11 +14,11 @@
 (license LICENSE)
 
 
-(package
+ (package
  (name gauge)
  (synopsis "static complexity linter for OCaml")
  (description "A longer description")
- (depends ocaml)
+ (depends ocaml ppxlib ppx_expect)
  (tags
   ("add topics" "to describe" your project)))
 
