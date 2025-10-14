@@ -77,10 +77,39 @@ let contains_apply_to_name name (e : expression) : bool =
   let pat2 = name ^ " " in
   string_contains src pat1 || string_contains src pat2
 
-(* heuristic: extract simple names that follow the text "let rec " in the printed expression *)
-let rec_extract_names (src : string) : string list =
+let collect_local_rec_names (e : expression) : string list =
+  let acc = ref [] in
+  let rec walk exp =
+    match exp.pexp_desc with
+    | Pexp_let (rec_flag, vbs, body) ->
+        (match rec_flag with
+        | Recursive ->
+            List.iter (fun vb -> match vb.pvb_pat.ppat_desc with
+              | Ppat_var { txt = name; _ } -> acc := name :: !acc
+              | _ -> ()) vbs;
+            List.iter (fun vb -> walk vb.pvb_expr) vbs;
+            walk body
+        | Nonrecursive -> List.iter (fun vb -> walk vb.pvb_expr) vbs; walk body)
+    | Pexp_sequence (a,b) -> walk a; walk b
+    | Pexp_apply (f, args) -> walk f; List.iter (fun (_, a) -> walk a) args
+    | Pexp_tuple l -> List.iter walk l
+    | Pexp_construct (_, Some ex) -> walk ex
+    | Pexp_match (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_try (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_ifthenelse (cnd, t, fo) -> walk cnd; walk t; (match fo with None -> () | Some f -> walk f)
+    | Pexp_for (_, _, _, _, body) -> walk body
+    | Pexp_while (body, cond) -> walk body; walk cond
+    | _ -> ()
+  in
+  (try walk e with _ -> ()); !acc
+
+(* printed-expression fallback: find occurrences of "let rec NAME" in the printed expression *)
+let rec_extract_names_from_string (src : string) : string list =
+  let res = ref [] in
   let len = String.length src in
-  let rec aux i acc =
+  let is_ident_char c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c = '_' ) || (c >= '0' && c <= '9') in
+  let rec aux i =
+    if i >= len then () else
     try
       let j = String.index_from src i 'l' in
       if j + 8 < len && String.sub src j 8 = "let rec " then
@@ -89,15 +118,16 @@ let rec_extract_names (src : string) : string list =
         let rec read pos =
           if pos < len then
             let ch = src.[pos] in
-            if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch = '_' ) then (Buffer.add_char buf ch; read (pos+1))
+            if is_ident_char ch then (Buffer.add_char buf ch; read (pos+1))
             else (Buffer.contents buf, pos)
           else (Buffer.contents buf, pos)
         in
         let (nm, _) = read k in
-        if nm = "" then aux (j+1) acc else aux (j+1) (nm::acc)
-      else aux (j+1) acc
-    with _ -> acc
-  in aux 0 []
+        if nm <> "" then res := nm :: !res;
+        aux (j+1)
+      else aux (j+1)
+    with _ -> ()
+  in aux 0; !res
 
 (* compute cost for a function body given an env lookup for callee costs; optional self_name
    marks a local helper/recursive name that should be treated as a self-call when invoked *)
@@ -182,11 +212,19 @@ let infer_of_string_code source : Cost_model.cost =
     (* initial naive map: no interprocedural info (env returns None) *)
     let initial_map =
       List.map (fun (name, is_rec, expr) ->
-        let expr_src = (try Pprintast.string_of_expression expr with _ -> "<?>") in
-        let base = expr_cost_with_env (fun _ -> None) expr in
+  let base = expr_cost_with_env (fun _ -> None) expr in
         let base = if is_rec then mul_cost on base else base in
         (* consider local `let rec` helpers heuristically *)
-        let local_names = rec_extract_names expr_src in
+  let printed = (try Pprintast.string_of_expression expr with _ -> "") in
+  let local_names =
+    let ast_names = collect_local_rec_names expr in
+    let str_names = rec_extract_names_from_string printed in
+    (* merge and deduplicate: prefer ast_names order then str_names *)
+    let tbl = Hashtbl.create 8 in
+    List.iter (fun x -> Hashtbl.replace tbl x ()) ast_names;
+    List.iter (fun x -> if not (Hashtbl.mem tbl x) then Hashtbl.replace tbl x ()) str_names;
+    Hashtbl.fold (fun k _ acc -> k :: acc) tbl []
+  in
         let c = List.fold_left (fun acc ln ->
           if contains_apply_to_name ln expr then
             let c_local = expr_cost_with_env_with (Some ln) (fun _ -> None) expr in
@@ -202,10 +240,17 @@ let infer_of_string_code source : Cost_model.cost =
       let updated =
         List.map (fun (name, is_rec, expr) ->
           let env n = lookup_of_map map n in
-          let expr_src = (try Pprintast.string_of_expression expr with _ -> "<?>") in
           let base = expr_cost_with_env env expr in
           let base = if is_rec then mul_cost on base else base in
-          let local_names = rec_extract_names expr_src in
+          let printed = (try Pprintast.string_of_expression expr with _ -> "") in
+          let local_names =
+            let ast_names = collect_local_rec_names expr in
+            let str_names = rec_extract_names_from_string printed in
+            let tbl = Hashtbl.create 8 in
+            List.iter (fun x -> Hashtbl.replace tbl x ()) ast_names;
+            List.iter (fun x -> if not (Hashtbl.mem tbl x) then Hashtbl.replace tbl x ()) str_names;
+            Hashtbl.fold (fun k _ acc -> k :: acc) tbl []
+          in
           let c = List.fold_left (fun acc ln ->
             if contains_apply_to_name ln expr then
               let c_local = expr_cost_with_env_with (Some ln) env expr in
