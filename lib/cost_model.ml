@@ -34,3 +34,7 @@ let mul_cost a b =
 
 let seq_cost = max_cost
 
+let equal a b =
+  if a.degree < 0 && b.degree < 0 then true
+  else a.degree = b.degree && a.log = b.log
+
