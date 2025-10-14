@@ -50,12 +50,12 @@ let structure_item_depth (item : structure_item) : int =
   | Pstr_eval (e, _) -> expr_loop_depth e
   | _ -> 0
 
-let infer_of_string_code source : Cost_model.t =
+let infer_of_string_code source : Cost_model.cost =
   try
     let str = Frontend.parse_structure ~filename:"<input>" source in
     let depths = List.map structure_item_depth str in
     let max_depth = max_of_list depths in
-    if max_depth >= 2 then Cost_model.On2
-    else if max_depth = 1 then Cost_model.On
-    else Cost_model.O1
-  with _ -> Cost_model.OUnknown
+    if max_depth >= 2 then Cost_model.on2
+    else if max_depth = 1 then Cost_model.on
+    else Cost_model.o1
+  with _ -> Cost_model.ounk

@@ -16,5 +16,5 @@ let contains_rec structure =
 let infer_from_source ~filename source =
   try
     let str = parse_structure ~filename source in
-    if contains_rec str then Cost_model.On else Cost_model.O1
-  with _ -> Cost_model.OUnknown
+    if contains_rec str then Cost_model.on else Cost_model.o1
+  with _ -> Cost_model.ounk
