@@ -129,6 +129,29 @@ let rec_extract_names_from_string (src : string) : string list =
     with _ -> ()
   in aux 0; !res
 
+(* find the pvb_expr for a simple var-binding named `name` inside expression `e` *)
+let find_local_binding_expr (name : string) (e : expression) : expression option =
+  let found = ref None in
+  let rec walk exp =
+    match exp.pexp_desc with
+    | Pexp_let (_rec_flag, vbs, body) ->
+        List.iter (fun vb -> match vb.pvb_pat.ppat_desc with
+          | Ppat_var { txt = n; _ } when n = name -> found := Some vb.pvb_expr
+          | _ -> (walk vb.pvb_expr)) vbs;
+        walk body
+    | Pexp_sequence (a,b) -> walk a; walk b
+    | Pexp_apply (f, args) -> walk f; List.iter (fun (_, a) -> walk a) args
+    | Pexp_tuple l -> List.iter walk l
+    | Pexp_construct (_, Some ex) -> walk ex
+    | Pexp_match (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_try (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_ifthenelse (cnd, t, fo) -> walk cnd; walk t; (match fo with None -> () | Some f -> walk f)
+    | Pexp_for (_, _, _, _, body) -> walk body
+    | Pexp_while (body, cond) -> walk body; walk cond
+    | _ -> ()
+  in
+  (try walk e with _ -> ()); !found
+
 (* compute cost for a function body given an env lookup for callee costs; optional self_name
    marks a local helper/recursive name that should be treated as a self-call when invoked *)
 let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cost_model.cost option) (e : expression) : Cost_model.cost =
@@ -176,14 +199,39 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
   let inner = combine_seq (child_costs ()) in
   match e.pexp_desc with
   | Pexp_for (_, _, _, _, body) | Pexp_while (body, _) -> mul_cost on (expr_cost_with_env_with self_name env body)
-    | Pexp_apply (f, _args) ->
+  | Pexp_apply (f, args) ->
       (match f.pexp_desc with
       | Pexp_ident { txt = Longident.Lident name; _ } ->
-      if Some name = self_name then mul_cost on inner else
+          if Some name = self_name then mul_cost on inner else
           (match env name with
           | Some callee_cost -> seq_cost inner callee_cost
           | None -> inner)
-      | Pexp_ident { txt = Longident.Ldot (Lident "List", _); _ } -> mul_cost on inner
+      | Pexp_ident { txt = Longident.Ldot (Lident "List", _); _ } ->
+          (* List traversal: multiplicative by O(n). If a function identifier is passed as an
+             argument and we can resolve its cost from env or it's a local recursive helper,
+             include mul_cost on that callee cost. *)
+          let base = mul_cost on inner in
+          let ast_local_names = collect_local_rec_names e in
+          let arg_calls =
+            List.fold_left (fun acc (_, a) ->
+              match a.pexp_desc with
+              | Pexp_ident { txt = Longident.Lident an; _ } ->
+                  let acc =
+                    match env an with
+                    | Some c -> Cost_model.max_cost acc (mul_cost on c)
+                    | None -> acc
+                  in
+                  (* if it's a local recursive helper, evaluate it in-local to get its cost *)
+                  if List.exists ((=) an) ast_local_names then
+                    let c_local = match find_local_binding_expr an e with
+                      | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
+                      | None -> expr_cost_with_env_with (Some an) (fun _ -> None) e
+                    in
+                    Cost_model.max_cost acc (mul_cost on c_local)
+                  else acc
+              | _ -> acc
+            ) base args
+          in arg_calls
       | _ -> inner)
   | _ -> inner
 
@@ -227,8 +275,11 @@ let infer_of_string_code source : Cost_model.cost =
   in
         let c = List.fold_left (fun acc ln ->
           if contains_apply_to_name ln expr then
-            let c_local = expr_cost_with_env_with (Some ln) (fun _ -> None) expr in
-            Cost_model.max_cost acc (mul_cost on c_local)
+            let c_local = match find_local_binding_expr ln expr with
+              | Some be -> expr_cost_with_env_with (Some ln) (fun _ -> None) be
+              | None -> on
+            in
+            Cost_model.max_cost acc c_local
           else acc
         ) base local_names in
         (name, c)
@@ -253,8 +304,11 @@ let infer_of_string_code source : Cost_model.cost =
           in
           let c = List.fold_left (fun acc ln ->
             if contains_apply_to_name ln expr then
-              let c_local = expr_cost_with_env_with (Some ln) env expr in
-              Cost_model.max_cost acc (mul_cost on c_local)
+              let c_local = match find_local_binding_expr ln expr with
+                | Some be -> expr_cost_with_env_with (Some ln) env be
+                | None -> on
+              in
+              Cost_model.max_cost acc c_local
             else acc
           ) base local_names in
           (name, c)
