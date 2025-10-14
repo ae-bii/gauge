@@ -2,14 +2,18 @@ open Ppxlib
 open Parsetree
 open Asttypes
 
-let int_max a b = if a > b then a else b
-let max_of_list xs = List.fold_left int_max 0 xs
+let seq_cost = Cost_model.seq_cost
+let mul_cost = Cost_model.mul_cost
+let o1 = Cost_model.o1
+let on = Cost_model.on
 
-let rec expr_loop_depth (e : expression) : int =
-  let child_depths () =
-    let depths = ref [] in
-    let push d = depths := d :: !depths in
-    let add_expr ex = push (expr_loop_depth ex) in
+let combine_seq costs = List.fold_left seq_cost o1 costs
+
+let rec expr_cost (e : expression) : Cost_model.cost =
+  let child_costs () =
+    let cs = ref [] in
+    let push c = cs := c :: !cs in
+    let add_expr ex = push (expr_cost ex) in
     let add_option = function None -> () | Some ex -> add_expr ex in
     let add_list l = List.iter add_expr l in
     begin
@@ -27,35 +31,34 @@ let rec expr_loop_depth (e : expression) : int =
       | Pexp_while (body, cond) -> add_expr body; add_expr cond
       | _ -> ()
     end;
-    !depths
+    !cs
   in
-  let nested = max_of_list (child_depths ()) in
+  let inner = combine_seq (child_costs ()) in
   match e.pexp_desc with
-  | Pexp_for _ | Pexp_while _ -> 1 + nested
+  | Pexp_for (_, _, _, _, body) | Pexp_while (body, _) ->
+      let body_cost = expr_cost body in
+      mul_cost on body_cost
   | Pexp_apply (f, _args) ->
       (* treat List.map, List.iter, List.fold_* as traversals (depth 1) *)
       (match f.pexp_desc with
-    | Pexp_ident { txt = Longident.Ldot (Lident "List", _); _ } -> int_max 1 nested
-    | _ -> nested)
-  | _ -> nested
+      | Pexp_ident { txt = Longident.Ldot (Lident "List", _); _ } -> mul_cost on inner
+      | _ -> inner)
+  | _ -> inner
 
-let structure_item_depth (item : structure_item) : int =
+let structure_item_cost (item : structure_item) : Cost_model.cost =
   match item.pstr_desc with
   | Pstr_value (rec_flag, vbs) ->
-      let binding_depth vb = expr_loop_depth vb.pvb_expr in
-      let max_bind = max_of_list (List.map binding_depth vbs) in
+      let binding_cost vb = expr_cost vb.pvb_expr in
+      let max_bind = List.fold_left Cost_model.max_cost o1 (List.map binding_cost vbs) in
       (match rec_flag with
-      | Recursive -> int_max 1 max_bind
+      | Recursive -> mul_cost on max_bind
       | Nonrecursive -> max_bind)
-  | Pstr_eval (e, _) -> expr_loop_depth e
-  | _ -> 0
+  | Pstr_eval (e, _) -> expr_cost e
+  | _ -> o1
 
 let infer_of_string_code source : Cost_model.cost =
   try
     let str = Frontend.parse_structure ~filename:"<input>" source in
-    let depths = List.map structure_item_depth str in
-    let max_depth = max_of_list depths in
-    if max_depth >= 2 then Cost_model.on2
-    else if max_depth = 1 then Cost_model.on
-    else Cost_model.o1
+    let costs = List.map structure_item_cost str in
+    List.fold_left Cost_model.max_cost o1 costs
   with _ -> Cost_model.ounk
