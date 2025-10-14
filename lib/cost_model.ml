@@ -1,30 +1,36 @@
-type t =
-  | O1
-  | On
-  | On2
-  | OLog
-  | OUnknown
+type cost = { degree : int; log : int }
 
-let to_string = function
-  | O1 -> "O(1)"
-  | On -> "O(n)"
-  | On2 -> "O(n^2)"
-  | OLog -> "O(log n)"
-  | OUnknown -> "O(?)"
+let o1 = { degree = 0; log = 0 }
+let on = { degree = 1; log = 0 }
+let on2 = { degree = 2; log = 0 }
+let olog = { degree = 0; log = 1 }
+let ounk = { degree = -1; log = -1 }
+
+let to_string c =
+  if c.degree < 0 then "O(?)"
+  else if c.log <> 0 then Printf.sprintf "O(n^%d log^%d n)" c.degree c.log
+  else if c.degree = 0 then "O(1)"
+  else if c.degree = 1 then "O(n)"
+  else Printf.sprintf "O(n^%d)" c.degree
 
 let of_string s =
   match String.trim s with
-  | "O(1)" | "1" -> Some O1
-  | "O(n)" | "n" -> Some On
-  | "O(n^2)" | "n^2" -> Some On2
-  | "O(log n)" | "log n" -> Some OLog
+  | "O(1)" | "1" -> Some o1
+  | "O(n)" | "n" -> Some on
+  | "O(n^2)" | "n^2" -> Some on2
+  | "O(log n)" | "log n" -> Some olog
   | _ -> None
 
-let max a b =
-  match (a, b) with
-  | OUnknown, x -> x
-  | x, OUnknown -> x
-  | On2, _ | _, On2 -> On2
-  | On, _ | _, On -> On
-  | OLog, _ | _, OLog -> OLog
-  | O1, O1 -> O1
+(* Algebra *)
+let max_cost a b =
+  if a.degree < 0 then b else if b.degree < 0 then a
+  else if a.degree > b.degree then a
+  else if b.degree > a.degree then b
+  else (* same degree *) if a.log >= b.log then a else b
+
+let mul_cost a b =
+  if a.degree < 0 || b.degree < 0 then ounk
+  else { degree = a.degree + b.degree; log = a.log + b.log }
+
+let seq_cost = max_cost
+
