@@ -16,3 +16,21 @@ let report name inferred declared_opt =
             Printf.printf "%s: inferred=%s declared=%s [OK]\n" name inferred_s s
           else
             Printf.printf "%s: inferred=%s declared=%s [MISMATCH]\n" name inferred_s s)
+
+
+let report_many inferred_map declared_map =
+  (* inferred_map : (string * Cost_model.cost) list
+     declared_map : (string * string) list
+     Print per-function lines. If a declared annotation refers to a name not present,
+     still print it with inferred=(none). *)
+  let lookup_decl name = try Some (List.assoc name declared_map) with _ -> None in
+  let printed = ref [] in
+  List.iter (fun (name, cost) ->
+    let declared = lookup_decl name in
+    report name cost declared;
+    printed := name :: !printed
+  ) inferred_map;
+  (* also print declarations that weren't matched to any inferred function *)
+  List.iter (fun (dname, ds) -> if not (List.exists ((=) dname) !printed) then
+    Printf.printf "%s: inferred=%s declared=%s [DECLARED-BUT-NOT-FOUND]\n" dname "(none)" ds
+  ) declared_map

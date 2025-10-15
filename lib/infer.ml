@@ -238,7 +238,7 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
 (* wrapper with no self_name *)
 let expr_cost_with_env env e = expr_cost_with_env_with None env e
 
-let infer_of_string_code source : Cost_model.cost =
+let infer_all_of_string_code source : (string * Cost_model.cost) list =
   try
     let str = Frontend.parse_structure ~filename:"<input>" source in
 
@@ -319,13 +319,22 @@ let infer_of_string_code source : Cost_model.cost =
 
     let final_map = iterate initial_map 10 in
 
-    (* include top-level evaluation expressions as well *)
-    let top_costs = List.fold_left (fun acc item ->
-      match item.pstr_desc with
-      | Pstr_eval (e, _) -> (expr_cost_with_env (lookup_of_map final_map) e) :: acc
-      | _ -> acc
-    ) [] str in
+    (* include top-level evaluation expressions as well, name them __file__-N *)
+    let top_costs =
+      let counter = ref 0 in
+      List.fold_left (fun acc item ->
+        match item.pstr_desc with
+        | Pstr_eval (e, _) ->
+            let k = Printf.sprintf "__file__-%d" !counter in
+            incr counter;
+            (k, expr_cost_with_env (lookup_of_map final_map) e) :: acc
+        | _ -> acc
+      ) [] str in
 
-    let all_costs = (List.map snd final_map) @ top_costs in
-    List.fold_left Cost_model.max_cost o1 all_costs
-  with _ -> Cost_model.ounk
+    final_map @ top_costs
+  with _ -> []
+
+let infer_of_string_code source : Cost_model.cost =
+  let all = infer_all_of_string_code source in
+  if all = [] then Cost_model.ounk else
+  List.fold_left (fun acc (_, c) -> Cost_model.max_cost acc c) Cost_model.o1 all
