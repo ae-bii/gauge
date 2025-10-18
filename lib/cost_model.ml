@@ -8,10 +8,14 @@ let ounk = { degree = -1; log = -1 }
 
 let to_string c =
   if c.degree < 0 then "O(?)"
+  else if c.degree = 0 && c.log = 0 then "O(1)"
+  else if c.degree = 0 && c.log = 1 then "O(log n)"
+  else if c.degree = 0 && c.log <> 0 then Printf.sprintf "O(log^%d n)" c.log
+  else if c.degree = 1 && c.log = 0 then "O(n)"
+  else if c.degree = 1 && c.log = 1 then "O(n log n)"
+  else if c.log = 0 then Printf.sprintf "O(n^%d)" c.degree
   else if c.log <> 0 then Printf.sprintf "O(n^%d log^%d n)" c.degree c.log
-  else if c.degree = 0 then "O(1)"
-  else if c.degree = 1 then "O(n)"
-  else Printf.sprintf "O(n^%d)" c.degree
+  else "O(?)"
 
 let of_string s =
   let s = String.trim s in
@@ -20,6 +24,7 @@ let of_string s =
   | "O(n)" | "n" -> Some on
   | "O(n^2)" | "n^2" -> Some on2
   | "O(log n)" | "log n" -> Some olog
+  | "O(n log n)" | "n log n" -> Some { degree = 1; log = 1 }
   | _ ->
       (* Try to parse O(n^k) for arbitrary k *)
       try
