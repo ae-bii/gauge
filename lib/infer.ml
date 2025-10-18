@@ -253,7 +253,7 @@ let infer_all_of_string_code source : (string * Cost_model.cost) list =
               | _ -> acc
             in List.fold_right add vbs acc
         | _ -> acc
-      ) [] str in
+      ) [] str |> List.rev in
 
     let lookup_of_map map name = try Some (List.assoc name map) with _ -> None in
 
