@@ -14,12 +14,30 @@ let to_string c =
   else Printf.sprintf "O(n^%d)" c.degree
 
 let of_string s =
-  match String.trim s with
+  let s = String.trim s in
+  match s with
   | "O(1)" | "1" -> Some o1
   | "O(n)" | "n" -> Some on
   | "O(n^2)" | "n^2" -> Some on2
   | "O(log n)" | "log n" -> Some olog
-  | _ -> None
+  | _ ->
+      (* Try to parse O(n^k) for arbitrary k *)
+      try
+        let len = String.length s in
+        if len > 5 && String.sub s 0 4 = "O(n^" then
+          let rest = String.sub s 4 (len - 4) in
+          if String.length rest > 0 && rest.[String.length rest - 1] = ')' then
+            let num_str = String.sub rest 0 (String.length rest - 1) in
+            let degree = int_of_string num_str in
+            if degree >= 0 then Some { degree; log = 0 } else None
+          else None
+        (* Also try without the O() wrapper: n^k *)
+        else if len > 2 && String.sub s 0 2 = "n^" then
+          let num_str = String.sub s 2 (len - 2) in
+          let degree = int_of_string num_str in
+          if degree >= 0 then Some { degree; log = 0 } else None
+        else None
+      with _ -> None
 
 (* Algebra *)
 let max_cost a b =
