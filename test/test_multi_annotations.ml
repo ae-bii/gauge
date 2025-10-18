@@ -1,5 +1,3 @@
-(* Test that gauge can analyze multiple functions with multiple @complexity annotations in a single file *)
-
 let%expect_test "multiple annotations in one file" =
   let code = {|
 (* @complexity foo: O(1) *)
@@ -14,12 +12,10 @@ let baz lst = List.map (fun x -> List.length lst + x) lst
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
   Gauge.Report.report_many inferred declared;
-  (* baz currently infers O(1) because the analyzer doesn't yet evaluate
-     lambda bodies passed to List.map. *)
   [%expect {|
     foo: inferred=O(1) declared=O(1) [OK]
     bar: inferred=O(n) declared=O(n) [OK]
-    baz: inferred=O(1) declared=O(n^2) [MISMATCH]
+    baz: inferred=O(n^2) declared=O(n^2) [OK]
   |}]
 
 let%expect_test "mixed annotations with unannotated function" =
@@ -35,11 +31,10 @@ let gamma lst = List.map (fun y -> List.fold_left (+) 0 lst) lst
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
   Gauge.Report.report_many inferred declared;
-  (* gamma currently infers O(1) due to lambda body evaluation limitation *)
   [%expect {|
     alpha: inferred=O(n) declared=O(n) [OK]
     beta: inferred=O(1) declared=(none)
-    gamma: inferred=O(1) declared=O(n^2) [MISMATCH]
+    gamma: inferred=O(n^2) declared=O(n^2) [OK]
   |}]
 
 let%expect_test "annotation for non-existent function" =
