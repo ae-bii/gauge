@@ -242,10 +242,56 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           else if name = "::" then
             (* List cons: O(1) *)
             inner
+          (* Handle string concatenation operator *)
+          else if name = "^" then
+            (* String concatenation: O(n) in the combined length *)
+            seq_cost inner on
           else if Some name = self_name then mul_cost on inner else
           (match env name with
           | Some callee_cost -> seq_cost inner callee_cost
           | None -> inner)
+      | Pexp_ident { txt = Longident.Ldot (Lident "String", fn_name); _ } ->
+          (* Handle specific String module functions with known complexity *)
+          (match fn_name with
+          (* O(1) operations *)
+          | "length" | "get" | "unsafe_get" -> inner
+          
+          (* O(n) operations - string traversal/copying *)
+          | "make" | "init" | "sub" | "blit" | "concat" | "cat"
+          | "iter" | "iteri" | "map" | "mapi" | "fold_left" | "fold_right"
+          | "trim" | "escaped" | "uppercase_ascii" | "lowercase_ascii" 
+          | "capitalize_ascii" | "uncapitalize_ascii" ->
+              seq_cost inner on
+          
+          (* String comparison and search - O(n) in string length *)
+          | "equal" | "compare" | "contains" | "starts_with" | "ends_with"
+          | "index" | "index_opt" | "rindex" | "rindex_opt" 
+          | "index_from" | "index_from_opt" | "rindex_from" | "rindex_from_opt" ->
+              seq_cost inner on
+          
+          (* String split operations - O(n) *)
+          | "split_on_char" ->
+              seq_cost inner on
+          
+          (* Default: treat as O(n) *)
+          | _ -> seq_cost inner on
+          )
+      | Pexp_ident { txt = Longident.Ldot (Lident "Bytes", fn_name); _ } ->
+          (* Handle Bytes module - similar complexity to String *)
+          (match fn_name with
+          (* O(1) operations *)
+          | "length" | "get" | "set" | "unsafe_get" | "unsafe_set" | "create" -> inner
+          
+          (* O(n) operations *)
+          | "make" | "init" | "sub" | "blit" | "concat" | "cat"
+          | "iter" | "iteri" | "map" | "mapi" | "fold_left" | "fold_right"
+          | "trim" | "escaped" | "uppercase_ascii" | "lowercase_ascii" 
+          | "capitalize_ascii" | "uncapitalize_ascii" | "extend" | "fill" ->
+              seq_cost inner on
+          
+          (* Default: treat as O(n) *)
+          | _ -> seq_cost inner on
+          )
       | Pexp_ident { txt = Longident.Ldot (Lident "List", fn_name); _ } ->
           (* Handle specific List module functions with known complexity *)
           (match fn_name with
