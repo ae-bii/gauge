@@ -11,7 +11,7 @@ let baz lst = List.map (fun x -> List.length lst + x) lst
 |} in
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
-  Gauge.Report.report_many inferred declared;
+  let _ = Gauge.Report.report_many inferred declared in
   [%expect {|
     foo: inferred=O(1) declared=O(1) [OK]
     bar: inferred=O(n) declared=O(n) [OK]
@@ -30,7 +30,7 @@ let gamma lst = List.map (fun y -> List.fold_left (+) 0 lst) lst
 |} in
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
-  Gauge.Report.report_many inferred declared;
+  let _ = Gauge.Report.report_many inferred declared in
   [%expect {|
     alpha: inferred=O(n) declared=O(n) [OK]
     beta: inferred=O(1) declared=(none)
@@ -46,7 +46,7 @@ let real_func x = x + 1
 |} in
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
-  Gauge.Report.report_many inferred declared;
+  let _ = Gauge.Report.report_many inferred declared in
   [%expect {|
     real_func: inferred=O(1) declared=O(1) [OK]
     missing_func: inferred=(none) declared=O(n) [DECLARED-BUT-NOT-FOUND]
@@ -62,7 +62,7 @@ let fast x = x + 1
 |} in
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
-  Gauge.Report.report_many inferred declared;
+  let _ = Gauge.Report.report_many inferred declared in
   [%expect {|
     slow: inferred=O(n) declared=O(1) [MISMATCH]
     fast: inferred=O(1) declared=O(n^2) [MISMATCH]
