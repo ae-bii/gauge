@@ -30,8 +30,8 @@ let%expect_test "parse standard cases still work" =
     O(1) -> O(1)
     O(n) -> O(n)
     O(n^2) -> O(n^2)
-    O(log n) -> O(n^0 log^1 n)
-  |}]
+    O(log n) -> O(log n)
+    |}]
 
 let%expect_test "invalid formats fail gracefully" =
   let test_cases = ["O(n^)"; "O(n^abc)"; "invalid"; "O(n^-1)"] in

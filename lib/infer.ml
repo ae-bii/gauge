@@ -474,6 +474,113 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
             ) base args
           in arg_calls
           ) (* end match fn_name *)
+      | Pexp_ident { txt = Longident.Ldot (Lident "Hashtbl", fn_name); _ } ->
+          (* Handle Hashtbl module - hash tables with O(1) average case operations *)
+          (match fn_name with
+          (* O(1) operations - core hash table operations *)
+          | "create" | "clear" | "reset" | "length" 
+          | "add" | "find" | "find_opt" | "find_all" | "mem"
+          | "remove" | "replace" | "randomize" ->
+              inner
+          
+          (* O(n) operations - iterate over all entries *)
+          | "iter" | "fold" | "map" | "filter_map_inplace" | "to_seq" 
+          | "to_seq_keys" | "to_seq_values" | "add_seq" | "replace_seq"
+          | "of_seq" | "stats" ->
+              let base = mul_cost on inner in
+              (* Check if there's a function argument and evaluate it *)
+              let ast_local_names = collect_local_rec_names e in
+              let arg_calls =
+                List.fold_left (fun acc (_, a) ->
+                  match a.pexp_desc with
+                  | Pexp_ident { txt = Longident.Lident an; _ } ->
+                      let acc =
+                        match env an with
+                        | Some c -> Cost_model.max_cost acc (mul_cost on c)
+                        | None -> acc
+                      in
+                      if List.exists ((=) an) ast_local_names then
+                        let c_local = match find_local_binding_expr an e with
+                          | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
+                          | None -> expr_cost_with_env_with (Some an) (fun _ -> None) e
+                        in
+                        Cost_model.max_cost acc (mul_cost on c_local)
+                      else acc
+                  | _ ->
+                      let arg_cost = match a.pexp_desc with
+                        | Pexp_function (_, _, function_body) ->
+                            (match function_body with
+                            | Pfunction_cases (cases, _, _) -> 
+                                let case_costs = List.map (fun c -> expr_cost_with_env_with None env c.pc_rhs) cases in
+                                List.fold_left Cost_model.max_cost Cost_model.o1 case_costs
+                            | Pfunction_body body_expr -> expr_cost_with_env_with None env body_expr)
+                        | _ -> expr_cost_with_env_with None env a
+                      in
+                      Cost_model.max_cost acc (mul_cost on arg_cost)
+                ) base args
+              in arg_calls
+          
+          (* Default: treat as O(1) for hash table operations *)
+          | _ -> inner
+          )
+      | Pexp_ident { txt = Longident.Ldot (Lident "Map", fn_name); _ } ->
+          (* Handle Map module - balanced trees with O(log n) operations *)
+          (match fn_name with
+          (* O(1) operations *)
+          | "is_empty" | "cardinal" -> inner
+          
+          (* O(log n) operations - tree operations *)
+          | "empty" | "add" | "singleton" | "remove" | "find" | "find_opt"
+          | "find_first" | "find_first_opt" | "find_last" | "find_last_opt"
+          | "mem" | "min_binding" | "min_binding_opt" | "max_binding" 
+          | "max_binding_opt" | "choose" | "choose_opt" | "split" ->
+              seq_cost inner { degree = 0; log = 1 } (* O(log n) *)
+          
+          (* O(n) operations - iterate over all entries *)
+          | "iter" | "fold" | "map" | "mapi" | "filter" | "filter_map"
+          | "partition" | "bindings" | "to_seq" | "to_seq_from"
+          | "add_seq" | "of_seq" | "equal" | "compare" | "for_all"
+          | "exists" ->
+              let base = mul_cost on inner in
+              (* Check if there's a function argument and evaluate it *)
+              let ast_local_names = collect_local_rec_names e in
+              let arg_calls =
+                List.fold_left (fun acc (_, a) ->
+                  match a.pexp_desc with
+                  | Pexp_ident { txt = Longident.Lident an; _ } ->
+                      let acc =
+                        match env an with
+                        | Some c -> Cost_model.max_cost acc (mul_cost on c)
+                        | None -> acc
+                      in
+                      if List.exists ((=) an) ast_local_names then
+                        let c_local = match find_local_binding_expr an e with
+                          | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
+                          | None -> expr_cost_with_env_with (Some an) (fun _ -> None) e
+                        in
+                        Cost_model.max_cost acc (mul_cost on c_local)
+                      else acc
+                  | _ ->
+                      let arg_cost = match a.pexp_desc with
+                        | Pexp_function (_, _, function_body) ->
+                            (match function_body with
+                            | Pfunction_cases (cases, _, _) -> 
+                                let case_costs = List.map (fun c -> expr_cost_with_env_with None env c.pc_rhs) cases in
+                                List.fold_left Cost_model.max_cost Cost_model.o1 case_costs
+                            | Pfunction_body body_expr -> expr_cost_with_env_with None env body_expr)
+                        | _ -> expr_cost_with_env_with None env a
+                      in
+                      Cost_model.max_cost acc (mul_cost on arg_cost)
+                ) base args
+              in arg_calls
+          
+          (* O(n + m) operations - merge two maps *)
+          | "union" | "merge" ->
+              mul_cost on (mul_cost on inner)
+          
+          (* Default: treat as O(log n) for tree operations *)
+          | _ -> seq_cost inner { degree = 0; log = 1 }
+          )
       | _ -> inner)
   | _ -> inner
 
