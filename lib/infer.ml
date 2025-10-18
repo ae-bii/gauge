@@ -192,6 +192,11 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
       | Pexp_ifthenelse (cnd, t, fo) -> add_expr cnd; add_expr t; add_option fo
       | Pexp_for (_, _, _, _, body) -> add_expr body
       | Pexp_while (body, cond) -> add_expr body; add_expr cond
+      | Pexp_function (_, _, function_body) ->
+          (* handle function/lambda: extract cases from function_body *)
+          (match function_body with
+          | Pfunction_cases (cases, _, _) -> List.iter (fun c -> add_expr c.pc_rhs) cases
+          | Pfunction_body body_expr -> add_expr body_expr)
       | _ -> ()
     end;
     !cs
@@ -207,21 +212,22 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           | Some callee_cost -> seq_cost inner callee_cost
           | None -> inner)
       | Pexp_ident { txt = Longident.Ldot (Lident "List", _); _ } ->
-          (* List traversal: multiplicative by O(n). If a function identifier is passed as an
-             argument and we can resolve its cost from env or it's a local recursive helper,
-             include mul_cost on that callee cost. *)
+          (* list traversal: multiplicative by O(n). evaluate all arguments to capture:
+             1. Function identifiers (from env or local recursive helpers)
+             2. Inline lambda expressions (fun x -> ...)
+             The argument cost gets multiplied by O(n) since List.* applies it to each element. *)
           let base = mul_cost on inner in
           let ast_local_names = collect_local_rec_names e in
           let arg_calls =
             List.fold_left (fun acc (_, a) ->
               match a.pexp_desc with
               | Pexp_ident { txt = Longident.Lident an; _ } ->
+                  (* named function: look up in env or evaluate if local recursive helper *)
                   let acc =
                     match env an with
                     | Some c -> Cost_model.max_cost acc (mul_cost on c)
                     | None -> acc
                   in
-                  (* if it's a local recursive helper, evaluate it in-local to get its cost *)
                   if List.exists ((=) an) ast_local_names then
                     let c_local = match find_local_binding_expr an e with
                       | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
@@ -229,7 +235,19 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
                     in
                     Cost_model.max_cost acc (mul_cost on c_local)
                   else acc
-              | _ -> acc
+              | _ ->
+                  (* any other expression (including lambdas): evaluate and multiply by O(n) *)
+                  let arg_cost = match a.pexp_desc with
+                    | Pexp_function (_, _, function_body) ->
+                        (* for inline lambdas, extract and evaluate the body *)
+                        (match function_body with
+                        | Pfunction_cases (cases, _, _) -> 
+                            let case_costs = List.map (fun c -> expr_cost_with_env_with None env c.pc_rhs) cases in
+                            List.fold_left Cost_model.max_cost Cost_model.o1 case_costs
+                        | Pfunction_body body_expr -> expr_cost_with_env_with None env body_expr)
+                    | _ -> expr_cost_with_env_with None env a
+                  in
+                  Cost_model.max_cost acc (mul_cost on arg_cost)
             ) base args
           in arg_calls
       | _ -> inner)
@@ -237,6 +255,15 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
 
 (* wrapper with no self_name *)
 let expr_cost_with_env env e = expr_cost_with_env_with None env e
+
+(* extract the body from a function expression (unwrap Pexp_function layers) *)
+let rec unwrap_function_body (e : expression) : expression =
+  match e.pexp_desc with
+  | Pexp_function (_, _, function_body) ->
+      (match function_body with
+      | Pfunction_body body_expr -> unwrap_function_body body_expr
+      | Pfunction_cases _ -> e)  (* Can't unwrap pattern-match functions *)
+  | _ -> e
 
 let infer_all_of_string_code source : (string * Cost_model.cost) list =
   try
@@ -260,7 +287,9 @@ let infer_all_of_string_code source : (string * Cost_model.cost) list =
     (* initial naive map: no interprocedural info (env returns None) *)
     let initial_map =
       List.map (fun (name, is_rec, expr) ->
-  let base = expr_cost_with_env (fun _ -> None) expr in
+        (* For top-level functions, unwrap the fun -> wrappers to get the actual body *)
+        let body = unwrap_function_body expr in
+  let base = expr_cost_with_env (fun _ -> None) body in
         let base = if is_rec then mul_cost on base else base in
         (* consider local `let rec` helpers heuristically *)
   let printed = (try Pprintast.string_of_expression expr with _ -> "") in
@@ -289,10 +318,11 @@ let infer_all_of_string_code source : (string * Cost_model.cost) list =
     let rec iterate map iter =
       if iter <= 0 then map else
       let updated =
-        List.map (fun (name, is_rec, expr) ->
+        List.map (fun (name, _is_rec, expr) ->
           let env n = lookup_of_map map n in
-          let base = expr_cost_with_env env expr in
-          let base = if is_rec then mul_cost on base else base in
+          let body = unwrap_function_body expr in
+          let base = expr_cost_with_env env body in
+          (* don't multiply by O(n) during iteration - recursion is already accounted for in initial map *)
           let printed = (try Pprintast.string_of_expression expr with _ -> "") in
           let local_names =
             let ast_names = collect_local_rec_names expr in
