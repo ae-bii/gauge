@@ -207,7 +207,14 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
   | Pexp_apply (f, args) ->
       (match f.pexp_desc with
       | Pexp_ident { txt = Longident.Lident name; _ } ->
-          if Some name = self_name then mul_cost on inner else
+          (* Handle list operators *)
+          if name = "@" then
+            (* List append: O(n) in the length of left operand *)
+            seq_cost inner on
+          else if name = "::" then
+            (* List cons: O(1) *)
+            inner
+          else if Some name = self_name then mul_cost on inner else
           (match env name with
           | Some callee_cost -> seq_cost inner callee_cost
           | None -> inner)
