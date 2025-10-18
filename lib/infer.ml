@@ -77,6 +77,34 @@ let contains_apply_to_name name (e : expression) : bool =
   let pat2 = name ^ " " in
   string_contains src pat1 || string_contains src pat2
 
+(* helper: count the number of direct calls to a given function name in an expression *)
+let count_direct_calls_to_name name (e : expression) : int =
+  let count = ref 0 in
+  let rec walk exp =
+    match exp.pexp_desc with
+    | Pexp_apply (f, args) ->
+        (match f.pexp_desc with
+        | Pexp_ident { txt = Longident.Lident n; _ } when n = name -> 
+            incr count;
+            List.iter (fun (_, a) -> walk a) args
+        | _ -> walk f; List.iter (fun (_, a) -> walk a) args)
+    | Pexp_let (_, vbs, body) -> List.iter (fun vb -> walk vb.pvb_expr) vbs; walk body
+    | Pexp_sequence (a,b) -> walk a; walk b
+    | Pexp_tuple l -> List.iter walk l
+    | Pexp_construct (_, Some ex) -> walk ex
+    | Pexp_match (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_try (e0, cases) -> walk e0; List.iter (fun c -> walk c.pc_rhs) cases
+    | Pexp_ifthenelse (cnd, t, fo) -> walk cnd; walk t; (match fo with None -> () | Some f -> walk f)
+    | Pexp_for (_, _, _, _, body) -> walk body
+    | Pexp_while (body, cond) -> walk body; walk cond
+    | Pexp_function (_, _, function_body) ->
+        (match function_body with
+        | Pfunction_cases (cases, _, _) -> List.iter (fun c -> walk c.pc_rhs) cases
+        | Pfunction_body body_expr -> walk body_expr)
+    | _ -> ()
+  in
+  (try walk e with _ -> ()); !count
+
 let collect_local_rec_names (e : expression) : string list =
   let acc = ref [] in
   let rec walk exp =
@@ -297,7 +325,19 @@ let infer_all_of_string_code source : (string * Cost_model.cost) list =
         (* For top-level functions, unwrap the fun -> wrappers to get the actual body *)
         let body = unwrap_function_body expr in
   let base = expr_cost_with_env (fun _ -> None) body in
-        let base = if is_rec then mul_cost on base else base in
+        (* For recursive functions, multiply by O(n). If there are multiple 
+           self-calls, multiply by an additional O(n) to approximate branching recursion. *)
+        let base = 
+          if is_rec then
+            let self_call_count = count_direct_calls_to_name name body in
+            if self_call_count >= 2 then
+              (* Multiple recursive calls: approximate as O(n^2) *)
+              mul_cost on (mul_cost on base)
+            else
+              (* Single recursive call: O(n) *)
+              mul_cost on base
+          else base
+        in
         (* consider local `let rec` helpers heuristically *)
   let printed = (try Pprintast.string_of_expression expr with _ -> "") in
   let local_names =
