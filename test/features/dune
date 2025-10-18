@@ -1,0 +1,5 @@
+(library
+ (name gauge_tests_features)
+ (libraries gauge)
+ (preprocess (pps ppx_expect))
+ (inline_tests))
