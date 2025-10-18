@@ -292,6 +292,64 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           (* Default: treat as O(n) *)
           | _ -> seq_cost inner on
           )
+      | Pexp_ident { txt = Longident.Ldot (Lident "Array", fn_name); _ } ->
+          (* Handle Array module - arrays have O(1) random access unlike lists *)
+          (match fn_name with
+          (* O(1) operations *)
+          | "length" | "get" | "set" | "unsafe_get" | "unsafe_set" -> inner
+          
+          (* O(n) creation and copying operations *)
+          | "make" | "init" | "create_float" | "make_matrix" 
+          | "copy" | "append" | "sub" | "to_list" | "of_list" ->
+              seq_cost inner on
+          
+          (* O(n) operations that take a function argument - evaluate the function *)
+          | "map" | "mapi" | "iter" | "iteri" | "fold_left" | "fold_right"
+          | "fold_left_map" | "exists" | "for_all" | "find" | "find_opt"
+          | "find_map" | "mem" | "memq" ->
+              let base = mul_cost on inner in
+              let ast_local_names = collect_local_rec_names e in
+              let arg_calls =
+                List.fold_left (fun acc (_, a) ->
+                  match a.pexp_desc with
+                  | Pexp_ident { txt = Longident.Lident an; _ } ->
+                      let acc =
+                        match env an with
+                        | Some c -> Cost_model.max_cost acc (mul_cost on c)
+                        | None -> acc
+                      in
+                      if List.exists ((=) an) ast_local_names then
+                        let c_local = match find_local_binding_expr an e with
+                          | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
+                          | None -> expr_cost_with_env_with (Some an) (fun _ -> None) e
+                        in
+                        Cost_model.max_cost acc (mul_cost on c_local)
+                      else acc
+                  | _ ->
+                      let arg_cost = match a.pexp_desc with
+                        | Pexp_function (_, _, function_body) ->
+                            (match function_body with
+                            | Pfunction_cases (cases, _, _) -> 
+                                let case_costs = List.map (fun c -> expr_cost_with_env_with None env c.pc_rhs) cases in
+                                List.fold_left Cost_model.max_cost Cost_model.o1 case_costs
+                            | Pfunction_body body_expr -> expr_cost_with_env_with None env body_expr)
+                        | _ -> expr_cost_with_env_with None env a
+                      in
+                      Cost_model.max_cost acc (mul_cost on arg_cost)
+                ) base args
+              in arg_calls
+          
+          (* O(n) in-place operations *)
+          | "fill" | "blit" | "sort" | "stable_sort" | "fast_sort" ->
+              seq_cost inner on
+          
+          (* O(n^2) concat operations *)
+          | "concat" | "concat_map" ->
+              mul_cost on (mul_cost on inner)
+          
+          (* Default: treat as O(n) *)
+          | _ -> seq_cost inner on
+          )
       | Pexp_ident { txt = Longident.Ldot (Lident "List", fn_name); _ } ->
           (* Handle specific List module functions with known complexity *)
           (match fn_name with
@@ -299,7 +357,8 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           | "hd" | "tl" | "cons" -> inner
           
           (* O(n) operations that don't take function arguments *)
-          | "length" | "rev" | "flatten" | "sort" | "sort_uniq" ->
+          | "length" | "rev" | "flatten" | "sort" | "sort_uniq" 
+          | "nth" | "nth_opt" | "init" | "append" ->
               seq_cost inner on
           
           (* O(n) operations that take a function argument - evaluate the function *)
