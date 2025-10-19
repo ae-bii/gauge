@@ -225,6 +225,12 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           (match function_body with
           | Pfunction_cases (cases, _, _) -> List.iter (fun c -> add_expr c.pc_rhs) cases
           | Pfunction_body body_expr -> add_expr body_expr)
+      | Pexp_field (e, _) -> add_expr e  (* Record field access: process the record expr *)
+      | Pexp_setfield (e1, _, e2) -> add_expr e1; add_expr e2  (* Mutable field update *)
+      | Pexp_record (fields, base) ->
+          (* Record creation: process all field values *)
+          List.iter (fun (_, e) -> add_expr e) fields;
+          (match base with None -> () | Some e -> add_expr e)
       | _ -> ()
     end;
     !cs
@@ -232,11 +238,27 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
   let inner = combine_seq (child_costs ()) in
   match e.pexp_desc with
   | Pexp_for (_, _, _, _, body) | Pexp_while (body, _) -> mul_cost on (expr_cost_with_env_with self_name env body)
+  (* Record field access is O(1) *)
+  | Pexp_field (_, _) -> inner
+  (* Mutable record field update is O(1) *)
+  | Pexp_setfield (_, _, _) -> inner
+  (* Record creation is O(1) per field, so O(1) overall for constant fields *)
+  | Pexp_record (_, _) -> inner
   | Pexp_apply (f, args) ->
       (match f.pexp_desc with
       | Pexp_ident { txt = Longident.Lident name; _ } ->
+          (* Handle ref operations *)
+          if name = "!" then
+            (* Dereference: O(1) *)
+            inner
+          else if name = ":=" then
+            (* Assignment: O(1) *)
+            inner
+          else if name = "ref" then
+            (* Ref creation: O(1) *)
+            inner
           (* Handle list operators *)
-          if name = "@" then
+          else if name = "@" then
             (* List append: O(n) in the length of left operand *)
             seq_cost inner on
           else if name = "::" then
