@@ -845,6 +845,29 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           (* Default: treat as O(1) for lazy sequence operations *)
           | _ -> inner
           )
+      | Pexp_ident { txt = Longident.Ldot (Lident "Buffer", fn_name); _ } ->
+          (* Buffer module - efficient string building with amortized O(1) append *)
+          (match fn_name with
+          (* O(1) operations - buffer management *)
+          | "create" | "reset" | "clear" | "length" ->
+              inner
+          
+          (* O(1) amortized operations - adding to buffer *)
+          | "add_char" | "add_string" | "add_bytes" | "add_substring" | "add_subbytes"
+          | "add_substitute" | "add_channel" ->
+              inner
+          
+          (* O(n) operations - extracting content *)
+          | "contents" | "to_bytes" | "sub" ->
+              mul_cost on inner
+          
+          (* O(n) operations - buffer operations *)
+          | "nth" | "truncate" ->
+              inner  (* nth is O(1), truncate is O(1) *)
+          
+          (* Default: treat as O(1) for buffer operations *)
+          | _ -> inner
+          )
       | _ -> inner)
   | _ -> inner
 
