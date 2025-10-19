@@ -210,7 +210,26 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
         (* evaluate body with the local env; if it calls any group name, treat as multiplicative *)
               let body_cost = expr_cost_with_env_with None local_env body in
               push body_cost
-      | Nonrecursive -> add_list (List.map (fun vb -> vb.pvb_expr) vbs))
+      | Nonrecursive ->
+        (* Build environment tracking costs of non-recursive let bindings *)
+        let binding_costs = ref [] in
+        List.iter (fun vb ->
+          match vb.pvb_pat.ppat_desc with
+          | Ppat_var { txt = name; _ } ->
+              let c = expr_cost_with_env_with None env vb.pvb_expr in
+              binding_costs := (name, c) :: !binding_costs;
+              push c
+          | _ -> add_expr vb.pvb_expr
+        ) vbs;
+        (* Create extended environment including local bindings *)
+        let extended_env n =
+          try Some (List.assoc n !binding_costs)
+          with Not_found -> env n
+        in
+        (* Evaluate body with extended environment *)
+        let body_cost = expr_cost_with_env_with self_name extended_env body in
+        push body_cost
+      )
       | Pexp_sequence (e1, e2) -> add_expr e1; add_expr e2
       | Pexp_tuple l -> add_list l
       | Pexp_construct (_, c) -> (match c with None -> () | Some ex -> add_expr ex)

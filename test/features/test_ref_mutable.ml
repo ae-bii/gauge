@@ -48,10 +48,9 @@ let incr r = r := !r + 1
     incr: inferred=O(1) declared=O(1) [OK]
   |}]
 
-let%expect_test "ref in for loop - limitation: nested analysis" =
+let%expect_test "ref in for loop O(n)" =
   let code = {|
-(* @complexity sum_array: O(1) *)
-(* Note: gauge currently doesn't track nested for loops well *)
+(* @complexity sum_array: O(n) *)
 let sum_array arr =
   let total = ref 0 in
   for i = 0 to Array.length arr - 1 do
@@ -62,7 +61,7 @@ let sum_array arr =
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
   let _ = Gauge.Report.report_many inferred declared in
-  [%expect {| sum_array: inferred=O(1) declared=O(1) [OK] |}]
+  [%expect {| sum_array: inferred=O(n) declared=O(n) [OK] |}]
 
 let%expect_test "ref accumulator O(n) - tail recursive" =
   let code = {|
@@ -213,10 +212,9 @@ let get_value o = o.data.value
     get_value: inferred=O(1) declared=O(1) [OK]
   |}]
 
-let%expect_test "ref with List.length - shows O(1)" =
+let%expect_test "ref with List.length O(n)" =
   let code = {|
-(* @complexity count_total: O(1) *)
-(* Note: List.length call isn't tracked through local let binding *)
+(* @complexity count_total: O(n) *)
 let count_total lst =
   let count = ref 0 in
   count := List.length lst;
@@ -225,7 +223,7 @@ let count_total lst =
   let declared = Gauge.Contracts.extract_complexity_annotations code in
   let inferred = Gauge.Infer.infer_all_of_string_code code in
   let _ = Gauge.Report.report_many inferred declared in
-  [%expect {| count_total: inferred=O(1) declared=O(1) [OK] |}]
+  [%expect {| count_total: inferred=O(n) declared=O(n) [OK] |}]
 
 let%expect_test "multiple refs O(1)" =
   let code = {|
