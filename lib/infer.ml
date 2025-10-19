@@ -868,6 +868,51 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           (* Default: treat as O(1) for buffer operations *)
           | _ -> inner
           )
+      
+      | Pexp_ident { txt = Longident.Ldot (Lident "Option", fn_name); _ } ->
+          (* Option module - O(1) operations on optional values *)
+          (match fn_name with
+          (* O(1) operations - basic accessors and constructors *)
+          | "none" | "some" | "value" | "get" | "is_none" | "is_some" | "equal" | "compare" ->
+              inner
+          
+          (* O(1) operations - transformations (wrapper around inner function) *)
+          | "map" | "bind" | "join" | "iter" | "fold" ->
+              inner  (* The cost is determined by the function passed in *)
+          
+          (* O(1) operations - conversion and combination *)
+          | "to_list" | "to_seq" ->
+              inner  (* Either empty or single element *)
+          
+          | "to_result" ->
+              inner  (* Just wraps in Result *)
+          
+          (* Default: treat as O(1) *)
+          | _ -> inner
+          )
+      
+      | Pexp_ident { txt = Longident.Ldot (Lident "Result", fn_name); _ } ->
+          (* Result module - O(1) operations on result values *)
+          (match fn_name with
+          (* O(1) operations - constructors and accessors *)
+          | "ok" | "error" | "value" | "get_ok" | "get_error" | "is_ok" | "is_error" ->
+              inner
+          
+          (* O(1) operations - transformations *)
+          | "map" | "map_error" | "bind" | "join" | "iter" | "iter_error" | "fold" ->
+              inner  (* The cost is determined by the function passed in *)
+          
+          (* O(1) operations - conversion *)
+          | "to_option" | "to_list" | "to_seq" ->
+              inner  (* Either empty or single element *)
+          
+          (* O(1) operations - equality and comparison *)
+          | "equal" | "compare" ->
+              inner
+          
+          (* Default: treat as O(1) *)
+          | _ -> inner
+          )
       | _ -> inner)
   | _ -> inner
 
