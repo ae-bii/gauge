@@ -774,6 +774,77 @@ let rec expr_cost_with_env_with (self_name : string option) (env : string -> Cos
           (* Default: treat as O(1) for stack operations *)
           | _ -> inner
           )
+      | Pexp_ident { txt = Longident.Ldot (Lident "Seq", fn_name); _ } ->
+          (* Seq module - lazy sequences with deferred computation *)
+          (match fn_name with
+          (* O(1) operations - sequence constructors (lazy, not evaluated yet) *)
+          | "empty" | "return" | "cons" | "singleton" ->
+              inner
+          
+          (* O(1) operations - sequence inspection (first element only) *)
+          | "is_empty" | "uncons" | "head" | "head_exn" ->
+              inner
+          
+          (* O(n) operations - must consume/traverse entire sequence *)
+          | "iter" | "fold_left" | "iteri" | "fold_lefti" 
+          | "for_all" | "exists" | "find" | "find_opt" | "find_map"
+          | "length" | "compare" | "equal" ->
+              let base = mul_cost on inner in
+              (* Check if there's a function argument and evaluate it *)
+              let ast_local_names = collect_local_rec_names e in
+              let arg_calls =
+                List.fold_left (fun acc (_, a) ->
+                  match a.pexp_desc with
+                  | Pexp_ident { txt = Longident.Lident an; _ } ->
+                      let acc =
+                        match env an with
+                        | Some c -> Cost_model.max_cost acc (mul_cost on c)
+                        | None -> acc
+                      in
+                      if List.exists ((=) an) ast_local_names then
+                        let c_local = match find_local_binding_expr an e with
+                          | Some be -> expr_cost_with_env_with (Some an) (fun _ -> None) be
+                          | None -> expr_cost_with_env_with (Some an) (fun _ -> None) e
+                        in
+                        Cost_model.max_cost acc (mul_cost on c_local)
+                      else acc
+                  | _ ->
+                      let arg_cost = match a.pexp_desc with
+                        | Pexp_function (_, _, function_body) ->
+                            (match function_body with
+                            | Pfunction_cases (cases, _, _) -> 
+                                let case_costs = List.map (fun c -> expr_cost_with_env_with None env c.pc_rhs) cases in
+                                List.fold_left Cost_model.max_cost Cost_model.o1 case_costs
+                            | Pfunction_body body_expr -> expr_cost_with_env_with None env body_expr)
+                        | _ -> expr_cost_with_env_with None env a
+                      in
+                      Cost_model.max_cost acc (mul_cost on arg_cost)
+                ) base args
+              in arg_calls
+          
+          (* O(1) lazy operations - create transformed sequence without evaluation *)
+          | "map" | "mapi" | "filter" | "filter_map" | "scan"
+          | "take" | "drop" | "take_while" | "drop_while"
+          | "tail" | "group" | "memoize" | "once"
+          | "transpose" | "zip" | "interleave" | "sorted_merge"
+          | "product" | "concat_map" | "flat_map" | "cycle" ->
+              inner
+          
+          (* O(n+m) operations - append/concat sequences (lazy) *)
+          | "append" | "concat" ->
+              inner
+          
+          (* O(n) conversions from eager data structures *)
+          | "of_list" | "of_array" | "of_string" | "of_bytes" ->
+              mul_cost on inner
+          
+          (* O(n) conversions to eager data structures (must consume sequence) *)
+          | "to_list" | "uniq" | "sort" | "sort_uniq" ->
+              mul_cost on inner
+          
+          (* Default: treat as O(1) for lazy sequence operations *)
+          | _ -> inner
+          )
       | _ -> inner)
   | _ -> inner
 
