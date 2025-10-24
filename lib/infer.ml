@@ -77,6 +77,103 @@ let contains_apply_to_name name (e : expression) : bool =
   let pat2 = name ^ " " in
   string_contains src pat1 || string_contains src pat2
 
+(* helper: detect if recursive calls operate on different parts of the data (tree-like)
+   vs overlapping subproblems (fibonacci-like).
+   Heuristic: 
+   - Tree-like: recursive calls on different pattern-bound variables (e.g., rec left, rec right)
+   - Fibonacci-like: recursive calls on transformations of same variable (e.g., rec (n-1), rec (n-2)) *)
+let is_tree_like_recursion name (e : expression) : bool =
+  (* Extract the base variable from a recursive call argument *)
+  let rec get_base_var exp =
+    match exp.pexp_desc with
+    | Pexp_ident { txt = Longident.Lident v; _ } -> Some v
+    | Pexp_apply (f, args) ->
+        (match f.pexp_desc with
+        | Pexp_ident { txt = Longident.Lident fn; _ } when fn = name ->
+            (match args with
+            | [] -> None
+            | (_, first) :: _ -> get_base_var first)
+        | _ ->
+            (match args with
+            | [] -> None
+            | (_, first) :: _ -> get_base_var first))
+    | _ -> None
+  in
+  (* Collect all recursive calls in the expression *)
+  let rec collect_rec_calls exp =
+    match exp.pexp_desc with
+    | Pexp_apply (f, args) ->
+        (match f.pexp_desc with
+        | Pexp_ident { txt = Longident.Lident n; _ } when n = name ->
+            [exp]  (* Found a recursive call *)
+        | _ ->
+            (* Not a recursive call, but continue searching in function and args *)
+            collect_rec_calls f @ List.concat_map (fun (_, a) -> collect_rec_calls a) args)
+    | Pexp_match (_, cases) -> List.concat_map (fun c -> collect_rec_calls c.pc_rhs) cases
+    | Pexp_let (_, vbs, body) ->
+        List.concat_map (fun vb -> collect_rec_calls vb.pvb_expr) vbs @ collect_rec_calls body
+    | Pexp_ifthenelse (cnd, t, fo) ->
+        collect_rec_calls cnd @ collect_rec_calls t @ (match fo with Some f -> collect_rec_calls f | None -> [])
+    | Pexp_sequence (a, b) -> collect_rec_calls a @ collect_rec_calls b
+    | Pexp_tuple exps -> List.concat_map collect_rec_calls exps
+    | Pexp_construct (_, Some e) -> collect_rec_calls e
+    | Pexp_function (_, _, fb) ->
+        (match fb with
+        | Pfunction_cases (cases, _, _) -> List.concat_map (fun c -> collect_rec_calls c.pc_rhs) cases
+        | Pfunction_body body -> collect_rec_calls body)
+    | _ -> []
+  in
+  (* Check if we have multiple recursive calls on different variables *)
+  let rec_calls = collect_rec_calls e in
+  let vars = List.filter_map get_base_var rec_calls in
+  let unique_vars = List.sort_uniq String.compare vars in
+  (* Tree-like if we have 2+ calls on 2+ different variables *)
+  List.length rec_calls >= 2 && List.length unique_vars >= 2
+
+(* helper: count the maximum number of self-calls along any single execution path *)
+let count_max_calls_per_path name (e : expression) : int =
+  let rec walk exp =
+    match exp.pexp_desc with
+    | Pexp_apply (f, args) ->
+        (match f.pexp_desc with
+        | Pexp_ident { txt = Longident.Lident n; _ } when n = name -> 
+            1 + (List.fold_left (fun acc (_, a) -> max acc (walk a)) 0 args)
+        | _ -> 
+            let from_f = walk f in
+            (* For function application arguments, ADD the counts because all args are evaluated.
+               e.g., f (rec x) (rec y) has 2 recursive calls on the same path. *)
+            let from_args = List.fold_left (fun acc (_, a) -> acc + walk a) 0 args in
+            max from_f from_args)
+    | Pexp_let (_, vbs, body) -> 
+        let from_bindings = List.fold_left (fun acc vb -> max acc (walk vb.pvb_expr)) 0 vbs in
+        let from_body = walk body in
+        max from_bindings from_body
+    | Pexp_sequence (a,b) -> walk a + walk b  (* Sequential: add them *)
+    | Pexp_tuple l -> List.fold_left (fun acc e -> max acc (walk e)) 0 l
+    | Pexp_construct (_, Some ex) -> walk ex
+    | Pexp_match (e0, cases) -> 
+        let from_e0 = walk e0 in
+        let from_cases = List.fold_left (fun acc c -> max acc (walk c.pc_rhs)) 0 cases in
+        from_e0 + from_cases
+    | Pexp_try (e0, cases) -> 
+        let from_e0 = walk e0 in
+        let from_cases = List.fold_left (fun acc c -> max acc (walk c.pc_rhs)) 0 cases in
+        max from_e0 from_cases
+    | Pexp_ifthenelse (cnd, t, fo) -> 
+        let from_cnd = walk cnd in
+        let from_then = walk t in
+        let from_else = match fo with None -> 0 | Some f -> walk f in
+        from_cnd + (max from_then from_else)  (* Condition + max of branches *)
+    | Pexp_for (_, _, _, _, body) -> walk body
+    | Pexp_while (body, cond) -> max (walk body) (walk cond)
+    | Pexp_function (_, _, function_body) ->
+        (match function_body with
+        | Pfunction_cases (cases, _, _) -> List.fold_left (fun acc c -> max acc (walk c.pc_rhs)) 0 cases
+        | Pfunction_body body_expr -> walk body_expr)
+    | _ -> 0
+  in
+  try walk e with _ -> 0
+
 (* helper: count the number of direct calls to a given function name in an expression *)
 let count_direct_calls_to_name name (e : expression) : int =
   let count = ref 0 in
@@ -953,16 +1050,28 @@ let infer_all_of_string_code source : (string * Cost_model.cost) list =
         (* For top-level functions, unwrap the fun -> wrappers to get the actual body *)
         let body = unwrap_function_body expr in
   let base = expr_cost_with_env (fun _ -> None) body in
-        (* For recursive functions, multiply by O(n). If there are multiple 
-           self-calls, multiply by an additional O(n) to approximate branching recursion. *)
+        (* For recursive functions, multiply by O(n). Distinguish between:
+           1. Single recursive call per path: O(n) - linear recursion
+           2. Multiple calls per path with disjoint work (tree-like): O(n) - each node visited once
+           3. Multiple calls per path with overlapping work (fibonacci-like): O(n^k) - exponential *)
         let base = 
           if is_rec then
-            let self_call_count = count_direct_calls_to_name name body in
-            if self_call_count >= 2 then
-              (* Multiple recursive calls: approximate as O(n^2) *)
-              mul_cost on (mul_cost on base)
+            (* Count max self-calls along any single execution path *)
+            let max_calls_per_path = count_max_calls_per_path name body in
+            if max_calls_per_path >= 2 then
+              (* Multiple recursive calls per path: check if tree-like or fibonacci-like *)
+              if is_tree_like_recursion name body then
+                (* Tree-like: each node visited once despite multiple calls, so O(n) *)
+                mul_cost on base
+              else
+                (* Fibonacci-like: overlapping subproblems, approximate as O(n^k) *)
+                let rec power_mul base_cost k =
+                  if k <= 1 then base_cost
+                  else mul_cost on (power_mul base_cost (k-1))
+                in
+                power_mul on max_calls_per_path
             else
-              (* Single recursive call: O(n) *)
+              (* Single recursive call per path: O(n) *)
               mul_cost on base
           else base
         in

@@ -41,11 +41,11 @@ let rec ackermann m n =
     ackermann: inferred=O(n^2) declared=O(n^2) [OK]
   |}]
 
-let%expect_test "tree traversal with two branches O(n^2)" =
+let%expect_test "tree traversal with two branches O(n)" =
   let code = {|
 type tree = Leaf of int | Node of tree * tree
 
-(* @complexity sum_tree: O(n^2) *)
+(* @complexity sum_tree: O(n) *)
 let rec sum_tree t =
   match t with
   | Leaf v -> v
@@ -55,7 +55,7 @@ let rec sum_tree t =
   let inferred = Gauge.Infer.infer_all_of_string_code code in
   let _ = Gauge.Report.report_many inferred declared in
   [%expect {|
-    sum_tree: inferred=O(n^2) declared=O(n^2) [OK]
+    sum_tree: inferred=O(n) declared=O(n) [OK]
   |}]
 
 (* Note: Complex patterns with List.filter and multiple let bindings
